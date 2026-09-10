@@ -1,0 +1,22 @@
+13:32:20  started, log sequence_20260909_133218.txt
+13:32:20  stage 1/3: target 90.0 C (up)
+13:33:18  stage 1, target 90.0 C, now 81.71 C, 58 s in stage
+13:34:07  stage 1 done at 95.52 C after 107 s
+13:34:07  stage 2/3: target 60.0 C (down)
+13:34:18  stage 2, target 60.0 C, now 95.64 C, 11 s in stage
+13:35:18  stage 2, target 60.0 C, now 86.69 C, 71 s in stage
+13:36:18  stage 2, target 60.0 C, now 74.84 C, 131 s in stage
+13:37:18  stage 2, target 60.0 C, now 64.90 C, 191 s in stage
+13:38:18  stage 2, target 60.0 C, now 61.51 C, 251 s in stage
+13:39:18  stage 2, target 60.0 C, now 60.32 C, 311 s in stage
+13:39:28  stage 2 done at 60.15 C after 321 s
+13:39:28  stage 3/3: target 120.0 C (up)
+13:40:18  stage 3, target 120.0 C, now 64.07 C, 50 s in stage
+13:41:18  ABORT at 156.37 C, limit 130.0 C
+13:41:18  closed
+Traceback (most recent call last):
+  File "/Users/yagiz/GitRepo/pid/sequence.py", line 105, in <module>
+    note("closed")
+  File "/Users/yagiz/GitRepo/pid/sequence.py", line 28, in note
+    sink.write(("# " + line + "\n"))
+ValueError: I/O operation on closed file.
