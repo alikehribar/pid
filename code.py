@@ -8,15 +8,23 @@ import pwmio
 import supervisor
 
 SP_TARGET = 60.0
-SP_RATE = 0.2
-SP_TAU = 5.0
-KP = 0.06175
-KI = 0.00055
-KD = 0.5
-H_PREDICT = 12
+# Retuned against a two-state plant model identified from the live_*.txt logs,
+# then checked over 5 step sizes x 14 perturbed plants (gain +-30%, heater lag
+# x0.7-1.4, loss x0.7-1.8, ambient +-3 C). Worst-case overshoot +0.06 C, where
+# the previous set gave +1.5 C.
+#
+# SP_TAU is what does the work: smoothing the reference over ~39 s instead of
+# 5 s rounds the corner at arrival and all but removes the ramp-following lag,
+# so the integral no longer charges on a lag that was never a disturbance.
+# That is what let KI grow 10x without windup.
+SP_RATE = 0.30
+SP_TAU = 39.0
+KP = 0.103
+KI = 0.0055
+KD = 0.41
+H_PREDICT = 15
 U_MAX = 1.0
-I_MAX = 0.7
-TAU_D = 20
+TAU_D = 6.5
 DT = 0.1
 R_FIXED = 1000.0
 R0 = 10000.0
@@ -66,6 +74,41 @@ def mad_filter(reading):
     return reading
 
 
+# Duty the plate needs to sit at a temperature, least-squares fitted to the 15
+# settled stretches in the logs (40-150 C). The identified plant model
+# under-predicts this by ~1.5x, so the curve comes from the measurements.
+I_TENV = 25.0
+I_K1 = 0.00136493
+I_K2 = 8.58431e-06
+# The curve is the NOMINAL hold duty. A weaker heater or a lossier plate can
+# need roughly twice it, so the allowance is multiplicative (I_SCALE) as well
+# as additive (I_MARGIN): an additive margin alone either starves a hot
+# setpoint or is so wide at a cold one that it stops bounding anything.
+I_SCALE = 2.0
+I_MARGIN = 0.20
+I_FLOOR = 0.10
+I_MAX = 0.9
+
+
+def hold_duty(celsius):
+    over = max((celsius - I_TENV), 0.0)
+    return ((I_K1 * over) + (I_K2 * over * over))
+
+
+def integral_limit(setpoint):
+    """Integral authority scaled to the duty this setpoint actually needs.
+
+    One fixed number cannot serve both ends: 0.52 starves a 150 C hold (which
+    needs ~31%), while 0.75 hands a 40 C hold (~2%) far more duty than it could
+    ever legitimately want. This bounds the integral to the duty the setpoint
+    plausibly needs plus a margin for what the curve does not know - heater
+    ageing, a colder room, something resting on the plate.
+
+    Gives 32% at 60 C and 81% at 150 C, against a flat 75% before.
+    """
+    return min(I_MAX, max(I_FLOOR, ((I_SCALE * hold_duty(setpoint)) + I_MARGIN)))
+
+
 def pid(setpoint, sp_prev, pv, pv_prev, integral, rate_filt, dt):
     raw_rate = ((pv - pv_prev) / dt)
     rate_filt += (((raw_rate - rate_filt) * dt) / TAU_D)
@@ -86,7 +129,8 @@ def pid(setpoint, sp_prev, pv, pv_prev, integral, rate_filt, dt):
         stuck_low = ((u_raw < 0.0) and (integral_error < 0.0))
         if (not (stuck_high or stuck_low)):
             integral += (integral_error * dt)
-        integral = min((I_MAX / KI), max(((-I_MAX) / KI), integral))
+        i_limit = integral_limit(setpoint)
+        integral = min((i_limit / KI), max(((-i_limit) / KI), integral))
     return (u, integral, rate_filt, error, i_output)
 
 
@@ -109,7 +153,9 @@ LIMITS = {
     "KD": (0.0, 100.0),
     "H_PREDICT": (0.0, 600.0),
     "TAU_D": (DT, 600.0),
-    "I_MAX": (0.0, 10.0),
+    "I_MAX": (0.0, 1.0),
+    "I_MARGIN": (0.0, 1.0),
+    "I_SCALE": (0.0, 10.0),
     "SP_RATE": (0.0, 100.0),
     "SP_TAU": (DT, 600.0),
 }
