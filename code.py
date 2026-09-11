@@ -52,7 +52,10 @@ def to_celsius(voltage):
     return (kelvin - 273.15)
 
 
-MAD_WIN = 8           # samples the median spans (7 * DT = 0.35 s)
+# Odd, so MAD_WIN // 2 is the true middle element. At 8 it was the upper of
+# the two middle samples, biasing the filter up by 0.003 C - negligible next to
+# the 0.018 C sensor noise, but free to get right.
+MAD_WIN = 7
 MAD_K = 3.5                # reject a reading further out than k robust sigmas
 MAD_FLOOR = 0.1           # C, ~1.5 ADC codes; keeps the threshold off zero
 mad_buf = []
@@ -121,11 +124,30 @@ def integral_limit(setpoint):
     return min(I_MAX, max(I_FLOOR, ((I_SCALE * hold_duty(setpoint)) + I_MARGIN)))
 
 
+def lowpass(state, value, dt, tau):
+    """Forward-Euler low-pass, kept stable when dt is long.
+
+    dt is measured, not assumed, and the loop lets it reach 10 * DT after an
+    overrun. A step of dt / tau above 2 makes this oscillate instead of smooth
+    and above ~2 it diverges outright, so the step is capped: the worst a long
+    cycle can do is track the input exactly.
+    """
+    return (state + ((value - state) * min((dt / tau), 1.0)))
+
+
 def pid(setpoint, sp_prev, pv, pv_prev, integral, rate_filt, dt):
     raw_rate = ((pv - pv_prev) / dt)
-    rate_filt += (((raw_rate - rate_filt) * dt) / TAU_D)
+    rate_filt = lowpass(rate_filt, raw_rate, dt, TAU_D)
     sp_rate = ((setpoint - sp_prev) / dt)
     target = (setpoint + (H_PREDICT * sp_rate))
+    # The reference stops at SP_TARGET, so aiming past it only invites
+    # overshoot. It cannot happen at the shipped constants (H_PREDICT / SP_TAU
+    # is 0.38), but both are settable over serial: at sp_tau 5 the aim point
+    # reaches 63.0 C for a 60 C target, at sp_tau 1 it reaches 64.2 C.
+    if (sp_rate > 0.0):
+        target = min(target, SP_TARGET)
+    elif (sp_rate < 0.0):
+        target = max(target, SP_TARGET)
     predicted = (pv + (H_PREDICT * rate_filt))
     error = (target - predicted)
     integral_error = (setpoint - pv)
@@ -149,7 +171,7 @@ def pid(setpoint, sp_prev, pv, pv_prev, integral, rate_filt, dt):
 def reference(sp_target, sp_cmd, sp_filt, dt):
     step = (SP_RATE * dt)
     sp_cmd += max((-step), min(step, (sp_target - sp_cmd)))
-    sp_filt += (((sp_cmd - sp_filt) * dt) / SP_TAU)
+    sp_filt = lowpass(sp_filt, sp_cmd, dt, SP_TAU)
     return (sp_cmd, sp_filt)
 
 
@@ -164,12 +186,12 @@ LIMITS = {
     "KI": (0.0, 1.0),
     "KD": (0.0, 100.0),
     "H_PREDICT": (0.0, 600.0),
-    "TAU_D": (DT, 600.0),
+    "TAU_D": ((10.0 * DT), 600.0),
     "I_MAX": (0.0, 1.0),
     "I_MARGIN": (0.0, 1.0),
     "I_SCALE": (0.0, 10.0),
     "SP_RATE": (0.0, 100.0),
-    "SP_TAU": (DT, 600.0),
+    "SP_TAU": ((10.0 * DT), 600.0),
 }
 TUNABLE = tuple(LIMITS)
 (SP_MIN, SP_MAX) = (0.0, 200.0)
