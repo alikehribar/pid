@@ -12,22 +12,31 @@ SP_TARGET = 60.0
 # then checked over 6 step sizes x 16 perturbed plants: heater gain 0.5-2.0x
 # (the supply voltage has moved by 1.33x between runs, which is 1.77x in power),
 # heater lag x0.7-1.4, loss x0.7-1.5, ambient +-3 C, against both plant
-# calibrations. Worst-case overshoot +0.35 C and under 0.08 C away from the
-# extreme corner, where the previous set gave +1.5 C.
+# calibrations. Worst-case overshoot +0.10 C, where the original set gave
+# +1.5 C on the same test.
 #
-# SP_TAU is what does the work: smoothing the reference over ~39 s instead of
-# 5 s rounds the corner at arrival and all but removes the ramp-following lag,
-# so the integral no longer charges on a lag that was never a disturbance.
-# That is what let KI grow 10x without windup.
-SP_RATE = 0.30
-SP_TAU = 39.0
-KP = 0.103
-KI = 0.0055
-KD = 0.41
-H_PREDICT = 15
+# SP_TAU is what does most of the work: smoothing the reference over ~34 s
+# instead of 5 s rounds the corner at arrival and all but removes the ramp-
+# following lag, so the integral no longer charges on a lag that was never a
+# disturbance. That is what let KI grow an order of magnitude without windup.
+#
+# These gains belong to I_PRED 1 and were searched for it. H_PREDICT is only
+# 4.7 because the integral now sees the prediction itself, so the proportional
+# term no longer has to aim as far ahead to compensate. Setting I_PRED 0 with
+# this set is not the old controller - it is this one with a mismatched
+# integral; re-tune if you want to run that way.
+SP_RATE = 0.2272
+SP_TAU = 34.29
+KP = 0.21824
+KI = 0.0071573
+KD = 0.38398
+H_PREDICT = 4.6726
 U_MAX = 1.0
-TAU_D = 6.5
+TAU_D = 9.9519
 DT = 0.1
+# 1: the integral is fed the predicted error, the same one P and D act on.
+# 0: it is fed the present-day error, as before.
+I_PRED = 1.0
 R_FIXED = 1000.0
 R0 = 10000.0
 BETA = 3950.0
@@ -150,7 +159,13 @@ def pid(setpoint, sp_prev, pv, pv_prev, integral, rate_filt, dt):
         target = max(target, SP_TARGET)
     predicted = (pv + (H_PREDICT * rate_filt))
     error = (target - predicted)
-    integral_error = (setpoint - pv)
+    # Feeding the integral the same predicted error P and D act on stops it
+    # fighting the prediction near arrival. Both fall to the present-day error
+    # at steady state, where rate_filt and sp_rate are zero, so this changes no
+    # steady-state behaviour - only what the integral does during a move.
+    # Worst case over 16 plants x 6 step sizes: overshoot 0.35 -> 0.10 C and
+    # offset 0.13 -> 0.06 C, for 11% more settling time at the worst corner.
+    integral_error = (error if (I_PRED > 0.5) else (setpoint - pv))
     i_output = (KI * integral)
     # KP * error already carries -KP * H_PREDICT * rate_filt in through
     # `predicted`, so a separate -KD * rate_filt left KD controlling only part
@@ -187,6 +202,7 @@ LIMITS = {
     "KI": (0.0, 1.0),
     "KD": (0.0, 100.0),
     "H_PREDICT": (0.0, 600.0),
+    "I_PRED": (0.0, 1.0),
     "TAU_D": ((10.0 * DT), 600.0),
     "I_MAX": (0.0, 1.0),
     "I_MARGIN": (0.0, 1.0),
