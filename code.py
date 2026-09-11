@@ -74,12 +74,21 @@ def mad_filter(reading):
     return reading
 
 
-# Duty the plate needs to sit at a temperature, least-squares fitted to the 15
-# settled stretches in the logs (40-150 C). The identified plant model
-# under-predicts this by ~1.5x, so the curve comes from the measurements.
+# Duty the plate needs to sit at a temperature, fitted to the settled stretches
+# of the runs the gains were identified from. The identified plant model
+# under-predicts hold duty by ~1.5x, so the curve comes from the measurements.
+#
+# Only 60 C and 80 C are actually measured (7 settled stretches, 6.8-7.1% and
+# 11.6-11.9%), so these two coefficients are exactly determined by two clusters
+# with nothing left over to check them against: the shape is physics (convection
+# plus radiation), not evidence, and everything above 80 C is extrapolation.
+# Earlier logs do hold 100 C and 150 C, but they disagree with these runs by up
+# to 1.7x at the same temperature - 194152 holds 90 C on less duty than 174705
+# holds 80 C, which no single plant can do - so they are left out rather than
+# averaged in. Re-fit this if the heater, the plate or the mounting changes.
 I_TENV = 25.0
-I_K1 = 0.00136493
-I_K2 = 8.58431e-06
+I_K1 = 0.00171584
+I_K2 = 7.57876e-06
 # The curve is the NOMINAL hold duty. A weaker heater or a lossier plate can
 # need roughly twice it, so the allowance is multiplicative (I_SCALE) as well
 # as additive (I_MARGIN): an additive margin alone either starves a hot
@@ -104,7 +113,7 @@ def integral_limit(setpoint):
     plausibly needs plus a margin for what the curve does not know - heater
     ageing, a colder room, something resting on the plate.
 
-    Gives 32% at 60 C and 81% at 150 C, against a flat 75% before.
+    Gives 34% at 60 C and 87% at 150 C, against a flat 75% before.
     """
     return min(I_MAX, max(I_FLOOR, ((I_SCALE * hold_duty(setpoint)) + I_MARGIN)))
 
