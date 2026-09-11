@@ -87,13 +87,13 @@ def mad_filter(reading):
 # holds 80 C, which no single plant can do - so they are left out rather than
 # averaged in. Re-fit this if the heater, the plate or the mounting changes.
 I_TENV = 25.0
-I_K1 = 0.00171584
-I_K2 = 7.57876e-06
+I_K1 = 0.00200045
+I_K2 = 3.81446e-06
 # The curve is the NOMINAL hold duty. A weaker heater or a lossier plate can
 # need roughly twice it, so the allowance is multiplicative (I_SCALE) as well
 # as additive (I_MARGIN): an additive margin alone either starves a hot
 # setpoint or is so wide at a cold one that it stops bounding anything.
-I_SCALE = 2.0
+I_SCALE = 3.0
 I_MARGIN = 0.20
 I_FLOOR = 0.10
 I_MAX = 0.9
@@ -111,9 +111,12 @@ def integral_limit(setpoint):
     needs ~31%), while 0.75 hands a 40 C hold (~2%) far more duty than it could
     ever legitimately want. This bounds the integral to the duty the setpoint
     plausibly needs plus a margin for what the curve does not know - heater
-    ageing, a colder room, something resting on the plate.
+    ageing, a colder room, something resting on the plate. I_SCALE is 3 rather
+    than 2 because the supply voltage has moved by 1.33x between runs, which is
+    1.77x in heater power, and 2 left the integral marginally starved at half
+    power into a lossy plate.
 
-    Gives 34% at 60 C and 87% at 150 C, against a flat 75% before.
+    Gives 42% at 60 C and 90% at 150 C, against a flat 75% before.
     """
     return min(I_MAX, max(I_FLOOR, ((I_SCALE * hold_duty(setpoint)) + I_MARGIN)))
 
