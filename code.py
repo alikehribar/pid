@@ -9,9 +9,11 @@ import supervisor
 
 SP_TARGET = 60.0
 # Retuned against a two-state plant model identified from the live_*.txt logs,
-# then checked over 5 step sizes x 14 perturbed plants (gain +-30%, heater lag
-# x0.7-1.4, loss x0.7-1.8, ambient +-3 C). Worst-case overshoot +0.06 C, where
-# the previous set gave +1.5 C.
+# then checked over 6 step sizes x 16 perturbed plants: heater gain 0.5-2.0x
+# (the supply voltage has moved by 1.33x between runs, which is 1.77x in power),
+# heater lag x0.7-1.4, loss x0.7-1.5, ambient +-3 C, against both plant
+# calibrations. Worst-case overshoot +0.35 C and under 0.08 C away from the
+# extreme corner, where the previous set gave +1.5 C.
 #
 # SP_TAU is what does the work: smoothing the reference over ~39 s instead of
 # 5 s rounds the corner at arrival and all but removes the ramp-following lag,
@@ -77,18 +79,16 @@ def mad_filter(reading):
     return reading
 
 
-# Duty the plate needs to sit at a temperature, fitted to the settled stretches
-# of the runs the gains were identified from. The identified plant model
-# under-predicts hold duty by ~1.5x, so the curve comes from the measurements.
+# Duty the plate needs to sit at a temperature. The identified plant model
+# under-predicts this by ~1.5x, so the curve comes from the measurements: 17
+# settled stretches across 6 logs spanning 60-150 C, residual scatter 7% rms. One log is excluded: 194152 needs 0.56x the duty of every
+# other run at BOTH 60 C and 90 C. A constant factor independent of temperature
+# is a heater-power difference, not a sensor error - a miscalibrated divider
+# shifts 1/T by a constant and so would need a different factor at each
+# temperature. It was the DC supply, about 1.33x the voltage of the other runs.
 #
-# Only 60 C and 80 C are actually measured (7 settled stretches, 6.8-7.1% and
-# 11.6-11.9%), so these two coefficients are exactly determined by two clusters
-# with nothing left over to check them against: the shape is physics (convection
-# plus radiation), not evidence, and everything above 80 C is extrapolation.
-# Earlier logs do hold 100 C and 150 C, but they disagree with these runs by up
-# to 1.7x at the same temperature - 194152 holds 90 C on less duty than 174705
-# holds 80 C, which no single plant can do - so they are left out rather than
-# averaged in. Re-fit this if the heater, the plate or the mounting changes.
+# So this curve is tied to one supply voltage: heater power goes as V^2 and the
+# duty to hold a temperature as 1/V^2. Change the supply and re-fit.
 I_TENV = 25.0
 I_K1 = 0.00200045
 I_K2 = 3.81446e-06
@@ -178,9 +178,10 @@ def reference(sp_target, sp_cmd, sp_filt, dt):
 pending = ""
 
 
-# Accepted range per tunable. TAU_D and SP_TAU divide inside the loop, so
-# their floor is DT rather than zero: a zero there raised ZeroDivisionError out
-# of the control loop while the gate stayed latched at its last duty.
+# Accepted range per tunable. A zero TAU_D or SP_TAU raised ZeroDivisionError
+# out of the control loop while the gate stayed latched at its last duty, and
+# any value under the longest dt the loop allows (10 * DT) would make its filter
+# oscillate rather than smooth, so that is the floor for both.
 LIMITS = {
     "KP": (0.0, 10.0),
     "KI": (0.0, 1.0),
