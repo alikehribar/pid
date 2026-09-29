@@ -392,21 +392,6 @@ steps took about 7 minutes to settle. In the higher steps on the same day the ov
 75 °C). A likely reason is that I found the gains at 70 °C on 15 September, when the
 setup behaved differently (section 6.2).
 
-## 9. Possible improvements
-
-I could not run more tests within this work. If the experiment were continued,
-these changes would address the problems above:
-
-1. Measure the voltage across the heater at 100 % PWM, to check whether the
-   full 12.4 V reaches it.
-2. Repeat the relay test with the current heater and at a lower temperature,
-   to reduce the overshoot at 30–40 °C.
-3. If the plate keeps losing heat as on Saturday, connect two resistors in series
-   instead of three (20 Ω, 7.7 W) to raise the ceiling to roughly 100 °C.
-4. Compare the NTC with a reference thermometer and fix it to the plate more
-   firmly, to measure the errors listed in section 7.
-5. Log the room temperature with every test.
-
 ## Appendix
 
 ### A. Data files
