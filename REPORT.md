@@ -355,16 +355,6 @@ What this means:
 - My ±0.1 °C goal can only be judged against the sensor reading. The true
   plate temperature is known to about ±0.4 °C at 40 °C.
 
-Not included:
-
-- **Self-heating of the NTC:** assuming a 3.3 V divider, the NTC dissipates
-  1.1 mW at 30 °C and 2.6 mW at 75 °C. The datasheet gives no dissipation
-  constant, so the resulting temperature rise is unknown.
-- **ADC offset and gain errors** of the Pico.
-- **Contact between the NTC and the plate.**
-
-These can only be measured by comparing against a reference thermometer.
-
 ## 8. Evaluation
 
 For the evaluation I used the last test on Saturday (log `1308`, Figure 4): first
