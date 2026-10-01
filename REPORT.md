@@ -1,8 +1,5 @@
 # PID Temperature Controller
 
-Measurements: 14, 15 and 26 September 2026
-Report date: 30 September 2026
-
 ## 1. Aim
 
 In this experiment I wanted to learn how a PID controller works and use one to
