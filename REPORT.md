@@ -381,5 +381,5 @@ between those two days.
 ### B. Code
 
 - `firmware/code.py`: controller running on the Pico 2, copied to the board as `code.py`
-- `tools/live_pid.py`: live plot and logger on the computer
+  - `tools/live_pid.py`: live plot and logger on the computer
 - `kicad/pid_heater.kicad_pro`, `kicad/pid_heater.kicad_sch`: KiCad schematic
