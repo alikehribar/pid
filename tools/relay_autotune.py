@@ -1,331 +1,120 @@
-"""Run a Marlin-style Astrom-Hagglund relay autotune."""
-
-import argparse
 import glob
 import math
 import statistics
 import time
 
-import matplotlib.pyplot as plt
 import serial
-from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Button
 
-BAUD = 115200
-REFRESH_MS = 200
+TARGET_C = 70.0
+BAND_C = 0.25
+SPAN = 15.0
+CYCLES = 7
 MIN_PHASE_S = 5.0
-TEST_TIMEOUT_S = 3600.0
-START_MARGIN_C = 2.0
 AMBIENT_C = 23.15
 GAIN_C_PER_PCT = 0.825
-RELAY_SPAN_MAX = 15.0
-HYSTERESIS_C = 0.25
+START_BELOW_C = (TARGET_C - 2.0)
+SAFETY_C = min(100.0, (TARGET_C + 20.0))
 
 
-def clamp(value, low, high):
-    return min(high, max(low, value))
-
-
-def find_port():
-    ports = sorted(glob.glob("/dev/cu.usbmodem*"))
-    if (not ports):
-        raise SystemExit("No /dev/cu.usbmodem* serial port found.")
-    return ports[0]
-
-
-def parse_line(text):
-    fields = text.split()
-    if (len(fields) != 4):
+def read_temperature(link):
+    fields = link.readline().decode("utf-8", "replace").split()
+    if ((len(fields) != 4) or fields[0].startswith("#")):
         return None
     try:
-        row = tuple(float(field) for field in fields)
+        return float(fields[1])
     except ValueError:
         return None
-    if ((not math.isfinite(row[0])) or (not math.isfinite(row[1]))
-            or (not math.isfinite(row[2])) or (row[2] < 0.0)
-            or (row[2] > 100.0)):
-        return None
-    return row
 
 
-class RelayAutotuner:
-    def __init__(self, target, required_cycles):
-        self.target = target
-        self.required_cycles = required_cycles
-        self.safety_limit = min(100.0, (target + 20.0))
-        self.running = False
-        self.finished = False
-        self.heating = True
-        self.cycles = 0
-        self.bias = 50.0
-        self.relay_d = 50.0
-        self.command = 0.0
-        self.started_at = 0.0
-        self.t_high_start = 0.0
-        self.t_low_start = 0.0
-        self.t_high = 0.0
-        self.t_low = 0.0
-        self.maximum = float("-inf")
-        self.minimum = float("inf")
-        self.results = []
-        self.reason = ""
-        self.initial_temperature = 0.0
-
-    def start(self, now, temperature):
-        self.running = True
-        self.started_at = now
-        self.t_high_start = now
-        self.maximum = temperature
-        self.minimum = temperature
-        self.initial_temperature = temperature
-        self.command = 100.0
-        return self.command
-
-    def stop(self, reason):
-        self.running = False
-        self.finished = True
-        self.command = 0.0
-        self.reason = reason
-        return self.command
-
-    def calculate_cycle(self):
-        amplitude = ((self.maximum - self.minimum) / 2.0)
-        period = (self.t_high + self.t_low)
-        if ((amplitude <= 0.0) or (period <= 0.0)):
-            return None
-        ultimate_gain = ((4.0 * self.relay_d) / (math.pi * amplitude))
-        result = (ultimate_gain, period, amplitude, self.minimum, self.maximum,
-                  self.bias, self.relay_d)
-        self.results.append(result)
-        return result
-
-    def step(self, now, temperature):
-        self.maximum = max(self.maximum, temperature)
-        self.minimum = min(self.minimum, temperature)
-        if (temperature >= self.safety_limit):
-            return (self.stop("temperature safety limit"), "safety")
-        if ((now - self.started_at) >= TEST_TIMEOUT_S):
-            return (self.stop("test timeout"), "timeout")
-        if (self.heating and (temperature > (self.target + HYSTERESIS_C))
-                and ((now - self.t_high_start) >= MIN_PHASE_S)):
-            self.heating = False
-            self.t_low_start = now
-            self.t_high = (now - self.t_high_start)
-            self.maximum = temperature
-            self.command = max(0.0, (self.bias - self.relay_d))
-            return (self.command, "high_to_low")
-        if ((not self.heating) and (temperature < (self.target - HYSTERESIS_C))
-                and ((now - self.t_low_start) >= MIN_PHASE_S)):
-            self.heating = True
-            self.t_high_start = now
-            self.t_low = (now - self.t_low_start)
-            if (self.cycles == 0):
-                estimate = ((self.target - AMBIENT_C) / GAIN_C_PER_PCT)
-                self.bias = clamp(estimate, 20.0, 80.0)
-                self.relay_d = min(RELAY_SPAN_MAX, self.bias,
-                                   (99.0 - self.bias))
-            elif (self.cycles > 0):
-                correction = ((self.relay_d * (self.t_high - self.t_low))
-                              / (self.t_low + self.t_high))
-                self.bias = clamp((self.bias + correction), 20.0, 80.0)
-                self.relay_d = min(RELAY_SPAN_MAX, self.bias,
-                                   (99.0 - self.bias))
-            if (self.cycles > 2):
-                self.calculate_cycle()
-            self.cycles += 1
-            self.minimum = temperature
-            if (self.cycles >= self.required_cycles):
-                return (self.stop("completed"), "completed")
-            self.command = min(100.0, (self.bias + self.relay_d))
-            return (self.command, "low_to_high")
-        return (None, None)
+def send_duty(link, percent):
+    link.write(("duty=%.4f\n" % percent).encode("ascii"))
 
 
-def summarize(results):
-    if (not results):
-        return None
-    selected = results[-min(3, len(results)):]
-    ultimate_gain = statistics.median(item[0] for item in selected)
-    ultimate_period = statistics.median(item[1] for item in selected)
-    kp = (0.6 * ultimate_gain)
-    ki = ((2.0 * kp) / ultimate_period)
-    kd = ((kp * ultimate_period) / 8.0)
-    return (ultimate_gain, ultimate_period, kp, ki, kd)
+def new_test(now, temperature):
+    return {"heating": True, "cycles": 0, "bias": 50.0, "d": 50.0,
+            "command": 100.0, "done": "", "high_start": now,
+            "low_start": 0.0, "t_high": 0.0, "t_low": 0.0,
+            "max": temperature, "min": temperature, "results": []}
+
+
+def relay_step(s, now, temperature):
+    s["max"] = max(s["max"], temperature)
+    s["min"] = min(s["min"], temperature)
+    if (temperature >= SAFETY_C):
+        s["done"] = "safety limit"
+    elif (s["heating"] and (temperature > (TARGET_C + BAND_C))
+            and ((now - s["high_start"]) >= MIN_PHASE_S)):
+        s["heating"] = False
+        s["t_high"] = (now - s["high_start"])
+        s["low_start"] = now
+        s["max"] = temperature
+        s["command"] = max(0.0, (s["bias"] - s["d"]))
+    elif ((not s["heating"]) and (temperature < (TARGET_C - BAND_C))
+            and ((now - s["low_start"]) >= MIN_PHASE_S)):
+        s["heating"] = True
+        s["t_low"] = (now - s["low_start"])
+        s["high_start"] = now
+        if (s["cycles"] == 0):
+            s["bias"] = ((TARGET_C - AMBIENT_C) / GAIN_C_PER_PCT)
+        else:
+            s["bias"] += ((s["d"] * (s["t_high"] - s["t_low"]))
+                          / (s["t_high"] + s["t_low"]))
+        s["bias"] = min(80.0, max(20.0, s["bias"]))
+        s["d"] = min(SPAN, s["bias"], (99.0 - s["bias"]))
+        if ((s["cycles"] > 2) and (s["max"] > s["min"])):
+            amplitude = ((s["max"] - s["min"]) / 2.0)
+            ku = ((4.0 * s["d"]) / (math.pi * amplitude))
+            s["results"].append((ku, (s["t_high"] + s["t_low"])))
+        s["cycles"] += 1
+        s["min"] = temperature
+        s["command"] = min(100.0, (s["bias"] + s["d"]))
+        if (s["cycles"] >= CYCLES):
+            s["done"] = "completed"
+    if s["done"]:
+        s["command"] = 0.0
+    return s["command"]
+
+
+def gains(results):
+    last = results[-3:]
+    ku = statistics.median(r[0] for r in last)
+    tu = statistics.median(r[1] for r in last)
+    kp = (0.6 * ku)
+    return (ku, tu, kp, ((2.0 * kp) / tu), ((kp * tu) / 8.0))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Marlin-style relay PID autotune.")
-    parser.add_argument("--port", default=None)
-    parser.add_argument("--target", type=float, default=70.0)
-    parser.add_argument("--cycles", type=int, default=7)
-    arguments = parser.parse_args()
-    if ((arguments.target < 40.0) or (arguments.target > 80.0)):
-        raise SystemExit("Target must be between 40 and 80 C.")
-    if ((arguments.cycles < 5) or (arguments.cycles > 12)):
-        raise SystemExit("Cycles must be between 5 and 12.")
-    port = (arguments.port if (arguments.port is not None) else find_port())
-    link = serial.Serial(port, BAUD, timeout=0)
-    link.reset_input_buffer()
-    tuner = RelayAutotuner(arguments.target, arguments.cycles)
-    log_path = time.strftime("relay_autotune_%Y%m%d_%H%M%S.csv")
-    log = open(log_path, "w", buffering=1)
-    log.write("host_s,board_s,temperature_c,board_duty_pct,command_pct,"
-              "heating,cycle,bias_pct,relay_d_pct\n")
-    started = time.monotonic()
-    state = {"buffer": "", "last_valid": started, "reported": False,
-             "link": link}
-    times = []
-    temperatures = []
-    commands = []
-    (figure, (temperature_ax, duty_ax)) = plt.subplots(
-        2, 1, sharex=True, figsize=(11, 7.5))
-    figure.canvas.manager.set_window_title("Relay autotune | %s" % port)
-    (temperature_line,) = temperature_ax.plot([], [], color="tab:blue",
-                                               label="NTC temperature")
-    (target_line,) = temperature_ax.plot([], [], color="0.4", linestyle="--",
-                                         label="tune target")
-    (duty_line,) = duty_ax.plot([], [], color="tab:red", drawstyle="steps-post",
-                                label="relay command")
-    temperature_ax.set_ylabel("Temperature (C)")
-    duty_ax.set_ylabel("Duty (%)")
-    duty_ax.set_xlabel("Elapsed time (min)")
-    temperature_ax.grid(alpha=0.3)
-    duty_ax.grid(alpha=0.3)
-    temperature_ax.legend(loc="upper left")
-    duty_ax.legend(loc="upper left")
-    figure.subplots_adjust(bottom=0.13, hspace=0.28)
-    status = figure.text(0.08, 0.025, "Waiting for the first measurement.", fontsize=9)
-
-    def send_duty(value):
-        active_link = state["link"]
-        if (active_link is None):
-            return
-        try:
-            active_link.write(("duty=%.4f\n" % value).encode("ascii"))
-            active_link.flush()
-        except serial.SerialException:
-            state["link"] = None
-
-    def report_result():
-        if (state["reported"]):
-            return
-        state["reported"] = True
-        result = summarize(tuner.results)
-        if (result is None):
-            message = ("Autotune stopped without enough stable cycles: " + tuner.reason)
-        else:
-            (ku, tu, kp, ki, kd) = result
-            message = ("Ku %.6f  Tu %.3f s  Kp %.6f  Ki %.6f  Kd %.6f"
-                       % (ku, tu, kp, ki, kd))
-            result_path = time.strftime("relay_autotune_result_%Y%m%d_%H%M%S.txt")
-            with open(result_path, "w") as result_file:
-                result_file.write((message + "\n"))
-                result_file.write(("source_csv %s\n" % log_path))
-            print(("\n" + message))
-            print(("Saved result to " + result_path))
-        status.set_text(message)
-
-    def stop_test(reason):
-        if (not tuner.finished):
-            tuner.stop(reason)
-        send_duty(0.0)
-        report_result()
-        figure.canvas.draw_idle()
-
-    stop_button = Button(figure.add_axes([0.78, 0.02, 0.16, 0.055]),
-                         "STOP / OUTPUT OFF")
-    stop_button.on_clicked(lambda _event: stop_test("stopped by user"))
-
-    def update(_frame):
-        now = time.monotonic()
-        active_link = state["link"]
-        if (active_link is None):
-            if (tuner.running and ((now - state["last_valid"]) > 2.0)):
-                tuner.stop("serial connection lost")
-            ports = sorted(glob.glob("/dev/cu.usbmodem*"))
-            if ports:
-                try:
-                    state["link"] = serial.Serial(ports[0], BAUD, timeout=0)
-                    send_duty(tuner.command)
-                except serial.SerialException:
-                    state["link"] = None
-            return (temperature_line, target_line, duty_line)
-        try:
-            received = active_link.read(4096).decode("utf-8", "replace")
-        except serial.SerialException:
-            state["link"] = None
-            status.set_text("Serial connection lost; waiting to reconnect.")
-            return (temperature_line, target_line, duty_line)
-        state["buffer"] += received
-        while ("\n" in state["buffer"]):
-            (raw, state["buffer"]) = state["buffer"].split("\n", 1)
-            text = raw.strip()
-            if (text.startswith("#")):
-                continue
-            row = parse_line(text)
-            if (row is None):
-                continue
-            elapsed = (time.monotonic() - started)
-            temperature = row[1]
-            state["last_valid"] = time.monotonic()
-            if ((not tuner.running) and (not tuner.finished)):
-                start_limit = (arguments.target - START_MARGIN_C)
-                if (temperature > start_limit):
-                    status.set_text("Cooling: %.2f C; start requires <= %.2f C."
-                                    % (temperature, start_limit))
-                else:
-                    command = tuner.start(elapsed, temperature)
-                    send_duty(command)
-                    status.set_text("Autotune started at %.2f C." % temperature)
-            elif tuner.running:
-                (command, event) = tuner.step(elapsed, temperature)
-                if (command is not None):
-                    send_duty(command)
-                if (event is not None):
-                    status.set_text(("%s | cycle %d | bias %.2f | d %.2f"
-                                     % (event, tuner.cycles, tuner.bias,
-                                        tuner.relay_d)))
-                if tuner.finished:
-                    report_result()
-            times.append(elapsed)
-            temperatures.append(temperature)
-            commands.append(tuner.command)
-            log.write("%.3f,%.3f,%.4f,%.3f,%.3f,%d,%d,%.4f,%.4f\n" %
-                      (elapsed, row[0], temperature, row[2], tuner.command,
-                       (1 if tuner.heating else 0), tuner.cycles,
-                       tuner.bias, tuner.relay_d))
-        if (tuner.running and ((now - state["last_valid"]) > 2.0)):
-            stop_test("measurement timeout")
-        if (not times):
-            return (temperature_line, target_line, duty_line)
-        x = [(value / 60.0) for value in times]
-        temperature_line.set_data(x, temperatures)
-        target_line.set_data([x[0], x[-1]], [arguments.target, arguments.target])
-        duty_line.set_data(x, commands)
-        temperature_ax.set_xlim(x[0], max((x[-1] + 0.2), 1.0))
-        temperature_ax.set_ylim((min(temperatures) - 2.0),
-                                max((max(temperatures) + 2.0),
-                                    (arguments.target + 4.0)))
-        duty_ax.set_ylim(-2.0, 102.0)
-        temperature_ax.set_title(
-            "T %.2f C | target %.2f C | duty %.1f %% | cycle %d/%d" %
-            (temperatures[-1], arguments.target, tuner.command,
-             tuner.cycles, arguments.cycles))
-        return (temperature_line, target_line, duty_line)
-
-    animation = FuncAnimation(figure, update, interval=REFRESH_MS,
-                              cache_frame_data=False)
-    print("Reading %s; saving to %s" % (port, log_path))
+    port = sorted(glob.glob("/dev/cu.usbmodem*"))[0]
+    link = serial.Serial(port, 115200, timeout=1)
+    log = open(time.strftime("relay_autotune_%Y%m%d_%H%M%S.csv"), "w")
+    log.write("time_s,temperature_c,command_pct,cycle,bias_pct\n")
+    print("waiting until the heater is below %.1f C" % START_BELOW_C)
+    t0 = time.monotonic()
+    s = None
     try:
-        plt.show()
+        while ((s is None) or (not s["done"])):
+            temperature = read_temperature(link)
+            if (temperature is None):
+                continue
+            now = (time.monotonic() - t0)
+            if (s is None):
+                if (temperature > START_BELOW_C):
+                    continue
+                s = new_test(now, temperature)
+                send_duty(link, s["command"])
+                print("test started at %.2f C" % temperature)
+            else:
+                old = s["command"]
+                if (relay_step(s, now, temperature) != old):
+                    send_duty(link, s["command"])
+            log.write("%.3f,%.4f,%.3f,%d,%.4f\n" % (
+                now, temperature, s["command"], s["cycles"], s["bias"]))
     finally:
-        try:
-            send_duty(0.0)
-        finally:
-            if (state["link"] is not None):
-                state["link"].close()
-            log.close()
-    return (animation, stop_button)
+        send_duty(link, 0.0)
+        log.close()
+    print("stopped: " + s["done"])
+    if s["results"]:
+        print("Ku %.6f  Tu %.3f s  Kp %.6f  Ki %.6f  Kd %.6f" % gains(s["results"]))
 
 
 if (__name__ == "__main__"):
